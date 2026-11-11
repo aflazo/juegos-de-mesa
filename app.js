@@ -2,7 +2,17 @@
 (function () {
   'use strict';
 
-  const M = window.Maldito;
+  const GAMES = { maldito: window.Maldito, ocho: window.OchoLocos };
+  const NAMES = { maldito: 'El Maldito', ocho: 'Ocho Locos', sol: 'Solitario' };
+  const CARD = window.Maldito;       // utilidades de cartas compartidas
+  const S = window.Solitario;
+  const SOLSAVE = 'solitario-save';
+  let gameId = 'maldito';            // juego de la partida en curso
+  let M = GAMES.maldito;             // motor del juego en curso
+  function setGame(id) { gameId = GAMES[id] ? id : 'maldito'; M = GAMES[gameId]; }
+  let homeGame = 'maldito';          // juego elegido en el inicio
+  const homeVals = { name: null, code: null, names: null };
+  const sol = { st: null, sel: null, undo: [] };
   const app = document.getElementById('app');
   const toastEl = document.getElementById('toast');
   const PREFIX = 'maldito-mvp1-';
@@ -60,19 +70,19 @@
   /* ---------- estado y envío de jugadas ---------- */
   function refresh() {
     if (mode === 'local') {
-      store(SAVE, { mode: 'local', state: local.state });
+      store(SAVE, { mode: 'local', game: gameId, state: local.state });
       view = M.viewFor(local.state, local.state.turn);
     } else if (mode === 'host') {
-      store(SAVE, { mode: 'host', code: net.code, seats: net.seats.map(s => ({ name: s.name, token: s.token })), state: net.state });
+      store(SAVE, { mode: 'host', game: gameId, code: net.code, seats: net.seats.map(s => ({ name: s.name, token: s.token })), state: net.state });
       const on = net.seats.map((s, i) => i === 0 || !!(s.conn && s.conn.open));
       net.seats.forEach((s, i) => {
         if (i === 0 || !s.conn || !s.conn.open) return;
         if (net.state) {
           const v = M.viewFor(net.state, i);
           v.conn = on;
-          s.conn.send({ t: 'state', view: v });
+          s.conn.send({ t: 'state', game: gameId, view: v });
         } else {
-          s.conn.send({ t: 'lobby', you: i, players: net.seats.map((x, j) => ({ name: x.name, on: on[j] })) });
+          s.conn.send({ t: 'lobby', game: gameId, you: i, players: net.seats.map((x, j) => ({ name: x.name, on: on[j] })) });
         }
       });
       if (net.state) { view = M.viewFor(net.state, 0); view.conn = on; }
@@ -214,8 +224,8 @@
 
   function clientOnData(d) {
     if (!d || typeof d !== 'object') return;
-    if (d.t === 'lobby') { lobby = d; view = null; render(); }
-    else if (d.t === 'state') { view = d.view; lobby = null; render(); }
+    if (d.t === 'lobby') { setGame(d.game); lobby = d; view = null; render(); }
+    else if (d.t === 'state') { setGame(d.game); view = d.view; lobby = null; render(); }
     else if (d.t === 'err') {
       toast(d.msg || 'Error');
       if (d.fatal) leave();
@@ -223,6 +233,7 @@
   }
 
   function leave() {
+    if (mode === 'sol') { mode = null; sol.sel = null; ui.help = false; return render(); }
     clearTimeout(net.retry);
     if (net.peer) { try { net.peer.destroy(); } catch (e) { /* nada */ } }
     if (mode === 'client') store(CLIENT, null, true); else store(SAVE, null);
@@ -239,8 +250,9 @@
   function cardHTML(c, o) {
     o = o || {};
     const red = c.s === 'H' || c.s === 'D';
-    return '<div class="card' + (red ? ' red' : '') + (c.r === 2 ? ' wildc' : '') + (o.sel ? ' sel' : '') + '" ' + (o.attr || '') + '>' +
-      '<span class="r">' + M.rankLabel(c.r) + '</span><span class="s">' + M.SUIT_SYM[c.s] + '</span>' +
+    const wild = c.r === 2 && mode !== 'sol' && gameId === 'maldito';
+    return '<div class="card' + (red ? ' red' : '') + (wild ? ' wildc' : '') + (o.sel ? ' sel' : '') + (o.cls ? ' ' + o.cls : '') + '" ' + (o.attr || '') + '>' +
+      '<span class="r">' + (c.r === 1 ? 'A' : CARD.rankLabel(c.r)) + '</span><span class="s">' + CARD.SUIT_SYM[c.s] + '</span>' +
       (o.tag ? '<span class="tag">' + o.tag + '</span>' : '') + '</div>';
   }
 
@@ -259,19 +271,22 @@
 
   function render() {
     if (!mode) return renderHome();
+    if (mode === 'sol') return renderSol();
     if (mode === 'host' && !net.state) return renderLobby();
     if (mode === 'client' && !view) return lobby ? renderLobby() : renderWaiting();
     if (!view) return;
-    renderGame();
+    if (gameId === 'ocho') renderOcho(); else renderGame();
   }
 
   function renderHome() {
-    const save = load(SAVE), cl = load(CLIENT, true);
-    const sala = (new URLSearchParams(location.search).get('sala') || '').toUpperCase().slice(0, 4);
-    const name = load('maldito-name') || '';
+    const save = load(SAVE), cl = load(CLIENT, true), solSave = load(SOLSAVE);
+    const sala = homeVals.code != null ? homeVals.code : (new URLSearchParams(location.search).get('sala') || '').toUpperCase().slice(0, 4);
+    const name = homeVals.name != null ? homeVals.name : (load('maldito-name') || '');
+    const gcard = (id, desc) => '<div class="game' + (homeGame === id ? ' on' : '') + '" data-act="pickgame" data-g="' + id + '"><b>' +
+      NAMES[id] + '</b><span>' + desc + '</span></div>';
     let resume = '';
     if (save && save.state) {
-      resume += '<div class="box"><h2>Tienes una partida guardada</h2><p>' +
+      resume += '<div class="box"><h2>Tienes una partida guardada de ' + NAMES[GAMES[save.game] ? save.game : 'maldito'] + '</h2><p>' +
         (save.mode === 'host' ? 'Sala ' + esc(save.code) + ' (eres el anfitrión)' : 'En esta misma pantalla') + ' · ' +
         save.state.players.map(p => esc(p.name)).join(', ') + '</p>' +
         '<div class="row"><button class="primary" data-act="resume">Continuar</button><button class="ghost" data-act="dropsave">Descartar</button></div></div>';
@@ -283,21 +298,31 @@
     app.innerHTML =
       '<div class="home">' +
       '<h1>Juegos de Mesa</h1><p>Elige un juego y arma la mesa.</p>' +
-      '<div class="games"><div class="game on"><b>El Maldito</b><span>2 a 6 jugadores · 10 juegos · el 2 es comodín</span></div>' +
-      '<div class="game off"><span>Más juegos pronto</span></div></div>' +
+      '<div class="games">' +
+      gcard('maldito', '2 a 6 jugadores · 10 juegos · el 2 es comodín') +
+      gcard('ocho', '2 a 6 jugadores · el 8 es comodín · a 100 puntos') +
+      gcard('sol', '1 jugador · Klondike clásico') + '</div>' +
       resume +
-      '<div class="box"><h2>Jugar en línea</h2>' +
+      (homeGame === 'sol'
+        ? '<div class="box"><h2>Solitario</h2><p>Ordena las cuatro bases del As al Rey. Se juega solo, en esta pantalla.</p>' +
+          (solSave && !solSave.won ? '<button class="primary" data-act="solresume">Continuar mi partida</button>' : '') +
+          '<button' + (solSave && !solSave.won ? '' : ' class="primary"') + ' data-act="solnew">Nueva partida</button></div>'
+        : multiHTML(name, sala)) +
+      '<button class="ghost" data-act="help">Ver reglas de ' + NAMES[homeGame] + '</button>' +
+      '</div>' + overlays();
+  }
+
+  function multiHTML(name, sala) {
+    return '<div class="box"><h2>' + NAMES[homeGame] + ': jugar en línea</h2>' +
       '<input id="name" maxlength="16" placeholder="Tu nombre" value="' + esc(name) + '">' +
       '<button class="primary" data-act="create">Crear una sala</button>' +
       '<div class="row"><input id="code" maxlength="4" placeholder="Código de sala" value="' + esc(sala) + '" style="text-transform:uppercase">' +
       '<button data-act="join">Unirme</button></div>' +
       '<p>Cada jugador entra desde su propio teléfono o computadora y solo ve sus cartas.</p></div>' +
-      '<div class="box"><h2>Jugar en esta misma pantalla</h2>' +
-      '<input id="names" placeholder="Nombres separados por coma (ej. Ana, Luis, Marta)">' +
+      '<div class="box"><h2>' + NAMES[homeGame] + ': en esta misma pantalla</h2>' +
+      '<input id="names" placeholder="Nombres separados por coma (ej. Ana, Luis, Marta)" value="' + esc(homeVals.names || '') + '">' +
       '<button data-act="local">Empezar</button>' +
-      '<p>Se van pasando el dispositivo; la mano se oculta entre turnos.</p></div>' +
-      '<button class="ghost" data-act="help">Ver reglas y juegos</button>' +
-      '</div>' + overlays();
+      '<p>Se van pasando el dispositivo; la mano se oculta entre turnos.</p></div>';
   }
 
   function renderWaiting() {
@@ -313,7 +338,7 @@
     const you = isHost ? 0 : lobby.you;
     const link = location.origin + location.pathname + '?sala=' + net.code;
     app.innerHTML =
-      '<div class="home"><h1>El Maldito</h1>' +
+      '<div class="home"><h1>' + NAMES[gameId] + '</h1>' +
       '<div class="box"><h2>Código de la sala</h2><div class="code">' + esc(net.code) + '</div>' +
       (isHost
         ? (net.ready
@@ -334,7 +359,7 @@
   function renderCover() {
     const p = view.players[view.turn];
     app.innerHTML = '<div class="cover"><p>Pásale el dispositivo a</p><h1>' + esc(p.name) + '</h1>' +
-      '<p>Juego ' + p.phase + ': ' + M.phaseText(p.phase) + '</p>' +
+      (gameId === 'maldito' ? '<p>Juego ' + p.phase + ': ' + M.phaseText(p.phase) + '</p>' : '<p>' + NAMES[gameId] + '</p>') +
       '<button class="primary" data-act="uncover">Ver mis cartas</button></div>';
   }
 
@@ -436,8 +461,10 @@
 
   function overlays() {
     let h = '';
-    if (view && mode && (view.status === 'roundEnd' || view.status === 'gameOver')) h += resultHTML();
-    if (ui.help) h += helpHTML();
+    if (view && mode && mode !== 'sol' && (view.status === 'roundEnd' || view.status === 'gameOver')) {
+      h += gameId === 'ocho' ? ochoResultHTML() : resultHTML();
+    }
+    if (ui.help) h += ui.help === 'ocho' ? ochoHelpHTML() : ui.help === 'sol' ? solHelpHTML() : helpHTML();
     if (ui.chooser) {
       h += '<div class="overlay" data-act="close"><div class="modal"><h2>' + esc(ui.chooser.title) + '</h2><div class="opts">' +
         ui.chooser.labels.map((l, i) => '<button data-act="choose" data-i="' + i + '">' + esc(l) + '</button>').join('') +
@@ -468,7 +495,7 @@
   function helpHTML() {
     return '<div class="overlay" data-act="close"><div class="modal"><h2>El Maldito</h2>' +
       '<table><tr><th>Juego</th><th>Qué hay que bajar</th></tr>' +
-      M.PHASES.map((p, i) => '<tr><td>' + (i + 1) + '</td><td>' + M.phaseText(i + 1) + '</td></tr>').join('') + '</table>' +
+      CARD.PHASES.map((p, i) => '<tr><td>' + (i + 1) + '</td><td>' + CARD.phaseText(i + 1) + '</td></tr>').join('') + '</table>' +
       '<p><b>Turno:</b> robas (mazo o descarte), juegas si puedes y siempre botas una carta.</p>' +
       '<p><b>Comodín:</b> el 2. Nunca más comodines que cartas en un juego, y en escaleras no van dos comodines juntos. ' +
       'Si tienes la carta que reemplaza a un comodín de una escalera, lo cambias y te lo llevas.</p>' +
@@ -476,6 +503,151 @@
       '<p><b>Después de bajarte</b> puedes bajar más juegos y agregar cartas a cualquier juego de la mesa.</p>' +
       '<p><b>Limpio:</b> botas tu última carta y se acaba la ronda. <b>Sucio:</b> te quedas sin cartas sin botar y los demás juegan un turno más.</p>' +
       '<p><b>Puntos</b> (por carta que te queda en la mano): 3 al 9 = 5 · 10, J, Q, K = 10 · As = 20 · 2 = 25. Gana quien completa el juego 10; si empatan, el de menos puntos.</p>' +
+      '<button class="primary" data-act="closebtn">Entendido</button></div></div>';
+  }
+
+  /* ---------- Ocho Locos ---------- */
+  function renderOcho() {
+    const v = view;
+    const me = v.players[v.you];
+    const playing = v.status === 'playing';
+    if (mode === 'local' && ui.cover && playing) return renderCover();
+    const myTurn = playing && v.turn === v.you;
+    const canDraw = myTurn && !v.drew && v.canDrawMore;
+    const canPass = myTurn && (v.drew || !v.canDrawMore);
+    const hand = sortHand(me.hand);
+    const ok = c => M.canPlay(c, v.top, v.suit);
+    const any = hand.some(ok);
+    const who = mode === 'local' ? esc(me.name) + ': ' : 'Tu turno: ';
+    const redSuit = v.suit === 'H' || v.suit === 'D';
+
+    let msg;
+    if (!playing) msg = 'Ronda terminada.';
+    else if (!myTurn) msg = 'Turno de ' + esc(v.players[v.turn].name) + '.';
+    else if (any) msg = who + 'juega una carta del mismo palo o número, o un 8.' + (canDraw ? ' También puedes robar.' : '');
+    else if (canDraw) msg = who + 'no tienes jugada. Roba una carta del mazo.';
+    else msg = who + 'no tienes jugada. Pasa el turno.';
+
+    const top =
+      '<div class="top">' + (net.code ? 'Sala <b>' + esc(net.code) + '</b> ·' : '') + ' <b>Ocho Locos</b> · Ronda <b>' + v.round + '</b> · a <b>' + v.target + '</b> puntos' +
+      (mode === 'client' && !net.connected ? ' · <span class="badge off">' + esc(ui.status || 'sin conexión') + '</span>' : '') +
+      '<span class="sp"></span><button class="small ghost" data-act="help">Reglas</button>' +
+      '<button class="small ghost" data-act="leave">Salir</button></div>';
+
+    const players = '<div class="players">' + v.players.map((p, i) =>
+      '<div class="pchip' + (playing && v.turn === i ? ' turn' : '') + '"><div class="n"><span>' + esc(p.name) +
+      (i === v.you && mode !== 'local' ? ' (tú)' : '') + '</span><span>' + p.score + ' pts</span></div>' +
+      '<div class="m">' + p.count + (p.count === 1 ? ' carta ' : ' cartas ') +
+      (p.count === 1 && playing ? '<span class="badge">última carta</span> ' : '') +
+      (v.conn && !v.conn[i] ? '<span class="badge off">sin conexión</span>' : '') + '</div></div>').join('') + '</div>';
+
+    const banner = '<div class="banner' + (myTurn ? ' mine' : '') + '"><div class="msg">' + msg + '</div>' +
+      '<div class="log">' + esc(v.log.slice(-2).join(' ')) + '</div></div>';
+
+    const center = '<div class="center">' +
+      '<div class="pile' + (canDraw ? ' can' : '') + '"' + (canDraw ? ' data-act="odraw"' : '') + '>' +
+      (v.canDrawMore ? '<div class="back"></div>' : '<div class="empty"></div>') +
+      '<div class="lbl">Mazo (' + v.deckCount + ')</div></div>' +
+      '<div class="pile">' + cardHTML(v.top) + '<div class="lbl">Descarte</div></div>' +
+      '<div class="pile"><div class="suitbox' + (redSuit ? ' red' : '') + '">' + CARD.SUIT_SYM[v.suit] + '</div><div class="lbl">Palo en juego</div></div>' +
+      '</div>';
+
+    let actions = '';
+    if (myTurn) actions += '<button class="primary" data-act="opass"' + (canPass ? '' : ' disabled') + '>Pasar</button>';
+    actions += '<button class="ghost" data-act="sort">Ordenar por ' + (sortMode === 'rank' ? 'palo' : 'número') + '</button>';
+    const hint = myTurn ? 'Toca una carta para jugarla. Con un 8 eliges el palo que sigue.' : '';
+
+    const dock = '<div class="dock"><div class="dock-in"><div class="hand">' +
+      hand.map(c => cardHTML(c, { cls: myTurn && !ok(c) ? 'dim' : '', attr: 'data-act="ocard" data-id="' + c.id + '"' })).join('') +
+      '</div><div class="actions">' + actions + '</div>' + (hint ? '<div class="hint">' + hint + '</div>' : '') + '</div></div>';
+
+    app.innerHTML = '<div class="game-screen">' + top + players + banner + center + '</div>' + dock + overlays();
+  }
+
+  function ochoResultHTML() {
+    const v = view, rr = v.roundResult, over = v.status === 'gameOver';
+    const w = rr.rows[rr.winner].name;
+    const sub = (rr.blocked ? 'Nadie podía jugar: gana quien tenía menos puntos en la mano. ' : esc(w) + ' se quedó sin cartas. ') +
+      esc(w) + ' suma ' + rr.gain + ' puntos.';
+    const rows = rr.rows.map((r, i) => '<tr' + (i === rr.winner ? ' class="win"' : '') + '><td>' + esc(r.name) + '</td><td class="num">' + r.left +
+      '</td><td class="num">' + r.pts + '</td><td class="num">' + r.total + '</td></tr>').join('');
+    let btn;
+    if (over) btn = '<button class="primary" data-act="home">Volver al inicio</button>';
+    else if (mode === 'client') btn = '<p>Esperando a que el anfitrión empiece la siguiente ronda…</p>';
+    else btn = '<button class="primary" data-act="next">Siguiente ronda</button>';
+    return '<div class="overlay"><div class="modal"><h2>' +
+      (over ? '🏆 Ganó ' + esc(w) : 'Fin de la ronda ' + rr.round) + '</h2><p>' + sub + '</p>' +
+      '<table><tr><th>Jugador</th><th class="num">Cartas</th><th class="num">Valor en mano</th><th class="num">Total</th></tr>' + rows + '</table>' +
+      btn + '</div></div>';
+  }
+
+  function ochoHelpHTML() {
+    return '<div class="overlay" data-act="close"><div class="modal"><h2>Ocho Locos</h2>' +
+      '<p><b>Objetivo:</b> quedarte sin cartas antes que los demás.</p>' +
+      '<p><b>Reparto:</b> 5 cartas a cada uno (7 si son 2 jugadores). Se voltea una carta para empezar el descarte.</p>' +
+      '<p><b>Tu turno:</b> juegas una carta del mismo palo o del mismo número que la de arriba del descarte.</p>' +
+      '<p><b>Los 8 son locos:</b> se pueden jugar sobre cualquier carta, y quien lo juega elige el palo que sigue.</p>' +
+      '<p><b>Si no puedes (o no quieres) jugar:</b> robas una carta. Si te sirve la puedes jugar; si no, pasas.</p>' +
+      '<p><b>Puntos:</b> quien se queda sin cartas suma el valor de las cartas que les quedaron a los demás: ' +
+      '8 = 50 · J, Q, K = 10 · As = 1 · el resto vale su número. Gana la partida el primero que llega a 100.</p>' +
+      '<button class="primary" data-act="closebtn">Entendido</button></div></div>';
+  }
+
+  /* ---------- Solitario ---------- */
+  function solSame(a, b) { return a && b && a.t === b.t && a.i === b.i && a.k === b.k; }
+
+  function solDo(fn) {
+    const snap = JSON.stringify(sol.st);
+    const done = fn();
+    if (done) {
+      sol.undo.push(snap);
+      if (sol.undo.length > 300) sol.undo.shift();
+      store(SOLSAVE, sol.st);
+    }
+    return done;
+  }
+
+  function renderSol() {
+    const st = sol.st, sel = sol.sel;
+    const isSel = (t, i, k) => sel && sel.t === t && (t === 'w' || (sel.i === i && (t === 'f' || k >= sel.k)));
+    const wasteTop = st.waste[st.waste.length - 1];
+
+    const top = '<div class="top"><b>Solitario</b> · Movimientos <b>' + st.moves + '</b><span class="sp"></span>' +
+      '<button class="small ghost" data-act="solundo"' + (sol.undo.length ? '' : ' disabled') + '>Deshacer</button>' +
+      '<button class="small ghost" data-act="solauto">Subir todo</button>' +
+      '<button class="small ghost" data-act="solnew">Nueva</button>' +
+      '<button class="small ghost" data-act="help">Reglas</button>' +
+      '<button class="small ghost" data-act="leave">Salir</button></div>';
+
+    const upper = '<div class="sol-row">' +
+      '<div class="slot" data-act="solstock">' + (st.stock.length ? '<div class="back"></div>' : '<div class="empty">↺</div>') + '</div>' +
+      '<div class="slot">' + (wasteTop ? cardHTML(wasteTop, { cls: isSel('w') ? 'pick' : '', attr: 'data-act="sol" data-t="w"' }) : '<div class="empty"></div>') + '</div>' +
+      '<div class="slot"></div>' +
+      st.found.map((p, i) => '<div class="slot">' + (p.length
+        ? cardHTML(p[p.length - 1], { cls: isSel('f', i) ? 'pick' : '', attr: 'data-act="sol" data-t="f" data-i="' + i + '"' })
+        : '<div class="empty" data-act="sol" data-t="f" data-i="' + i + '">' + CARD.SUIT_SYM[S.SUITS[i]] + '</div>') + '</div>').join('') +
+      '</div>';
+
+    const cols = '<div class="sol-row tab">' + st.tab.map((pile, i) => '<div class="slot col">' + (pile.length
+      ? pile.map((c, k) => c.up
+        ? cardHTML(c, { cls: 'up' + (isSel('t', i, k) ? ' pick' : ''), attr: 'data-act="sol" data-t="t" data-i="' + i + '" data-k="' + k + '"' })
+        : '<div class="back"></div>').join('')
+      : '<div class="empty" data-act="sol" data-t="t" data-i="' + i + '" data-k="-1"></div>') + '</div>').join('') + '</div>';
+
+    const hint = '<div class="hint">Toca una carta y luego el lugar adonde va. Toca dos veces una carta para subirla a su base.</div>';
+    const win = st.won ? '<div class="overlay"><div class="modal"><h2>🏆 ¡Ganaste!</h2><p>Completaste el solitario en ' + st.moves +
+      ' movimientos.</p><button class="primary" data-act="solnew">Jugar otra</button><button class="ghost" data-act="leave">Volver al inicio</button></div></div>' : '';
+
+    app.innerHTML = '<div class="game-screen sol">' + top + upper + cols + hint + '</div>' + win + overlays();
+  }
+
+  function solHelpHTML() {
+    return '<div class="overlay" data-act="close"><div class="modal"><h2>Solitario (Klondike)</h2>' +
+      '<p><b>Objetivo:</b> subir todas las cartas a las cuatro bases, una por palo, en orden del As al Rey.</p>' +
+      '<p><b>Columnas:</b> se arman hacia abajo alternando colores (rojo sobre negro, negro sobre rojo). Puedes mover una carta o una tira completa.</p>' +
+      '<p><b>Columna vacía:</b> solo puede empezar con un Rey.</p>' +
+      '<p><b>Mazo:</b> toca el mazo para voltear una carta. Cuando se acaba, tócalo otra vez para volver a pasarlo.</p>' +
+      '<p><b>Cómo mover:</b> toca la carta y luego el destino. Dos toques sobre la misma carta la suben a su base si se puede.</p>' +
       '<button class="primary" data-act="closebtn">Entendido</button></div></div>';
   }
 
@@ -493,6 +665,7 @@
   const handlers = {
     create() {
       const n = myName(); if (!n) return;
+      setGame(homeGame);
       net.seats = [{ name: n, token: 'host', conn: null }];
       net.state = null;
       hostStart(newCode(), false);
@@ -507,6 +680,7 @@
       const names = val('names').split(',').map(s => s.trim().slice(0, 16)).filter(Boolean);
       if (names.length < 2) return toast('Escribe al menos 2 nombres separados por coma.');
       if (names.length > M.MAX_PLAYERS) return toast('Máximo ' + M.MAX_PLAYERS + ' jugadores.');
+      setGame(homeGame);
       mode = 'local';
       local.state = M.newGame(names);
       ui.cover = true;
@@ -515,6 +689,7 @@
     resume() {
       const s = load(SAVE);
       if (!s || !s.state) return;
+      setGame(s.game);
       if (s.mode === 'local') { mode = 'local'; local.state = s.state; ui.cover = true; refresh(); }
       else {
         net.seats = s.seats.map(x => ({ name: x.name, token: x.token, conn: null }));
@@ -543,7 +718,73 @@
       leave();
     },
     home() { leave(); },
-    help() { ui.help = true; render(); },
+    help() { ui.help = mode === 'sol' ? 'sol' : mode ? gameId : homeGame; render(); },
+    pickgame(el) {
+      ['name', 'code', 'names'].forEach(id => { const x = document.getElementById(id); if (x) homeVals[id] = x.value; });
+      homeGame = NAMES[el.dataset.g] ? el.dataset.g : 'maldito';
+      store('juegos-sel', homeGame);
+      render();
+    },
+    // Ocho Locos
+    odraw() { send({ t: 'draw' }); },
+    opass() { send({ t: 'pass' }); },
+    ocard(el) {
+      const v = view;
+      if (!(v.status === 'playing' && v.turn === v.you)) return;
+      const c = meNow().hand.find(x => x.id === +el.dataset.id);
+      if (!c) return;
+      if (!M.canPlay(c, v.top, v.suit)) return toast('Esa carta no coincide en palo ni en número. Juega otra, o roba del mazo.');
+      if (c.r !== 8) return send({ t: 'play', id: c.id });
+      pick(M.SUITS.map(s => M.SUIT_SYM[s] + ' ' + M.SUIT_NAME[s]), '¿Qué palo pides?', i => send({ t: 'play', id: c.id, suit: M.SUITS[i] }));
+    },
+    // Solitario
+    solnew() {
+      if (mode === 'sol' && sol.st && !sol.st.won && sol.st.moves > 0 && !window.confirm('¿Empezar una partida nueva? Se pierde la actual.')) return;
+      mode = 'sol';
+      sol.st = S.newGame();
+      sol.sel = null;
+      sol.undo = [];
+      store(SOLSAVE, sol.st);
+      render();
+    },
+    solresume() {
+      const s = load(SOLSAVE);
+      if (!s) return;
+      mode = 'sol';
+      sol.st = s;
+      sol.sel = null;
+      sol.undo = [];
+      render();
+    },
+    solundo() {
+      const snap = sol.undo.pop();
+      if (!snap) return;
+      sol.st = JSON.parse(snap);
+      sol.sel = null;
+      store(SOLSAVE, sol.st);
+      render();
+    },
+    solauto() {
+      sol.sel = null;
+      if (!solDo(() => S.autoFound(sol.st))) toast('Por ahora no hay cartas que puedan subir a las bases.');
+      render();
+    },
+    solstock() { sol.sel = null; solDo(() => S.draw(sol.st)); render(); },
+    sol(el) {
+      const d = el.dataset;
+      const here = { t: d.t, i: d.i == null ? undefined : +d.i, k: d.k == null ? undefined : +d.k };
+      const pickable = S.cardsAt(sol.st, here).length > 0;
+      const sel = sol.sel;
+      if (!sel) { if (pickable) sol.sel = here; return render(); }
+      sol.sel = null;
+      if (solSame(sel, here)) {
+        if (!solDo(() => S.move(sol.st, sel, { t: 'f' }))) toast('Esa carta todavía no puede subir a su base.');
+        return render();
+      }
+      const to = here.t === 'f' ? { t: 'f' } : here.t === 't' ? { t: 't', i: here.i } : null;
+      if (!(to && solDo(() => S.move(sol.st, sel, to))) && pickable) sol.sel = here;
+      render();
+    },
     close(el, e) { if (e.target === el) { ui.help = false; ui.chooser = null; render(); } },
     closebtn() { ui.help = false; ui.chooser = null; render(); },
     choose(el) { const c = ui.chooser; ui.chooser = null; if (c) c.cb(+el.dataset.i); render(); },
@@ -601,7 +842,9 @@
   });
 
   // Para pruebas desde la consola.
-  window.__maldito = { get state() { return mode === 'local' ? local.state : net.state; }, refresh };
+  window.__maldito = { get state() { return mode === 'sol' ? sol.st : mode === 'local' ? local.state : net.state; }, refresh };
 
+  const savedSel = load('juegos-sel');
+  if (NAMES[savedSel]) homeGame = savedSel;
   render();
 })();
