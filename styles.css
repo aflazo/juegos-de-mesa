@@ -43,7 +43,7 @@ input {
 .box h2 { margin: 0; font-size: 16px; }
 .row { display: flex; gap: 8px; align-items: center; }
 .row > input { flex: 1; }
-.games { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.games { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 10px; }
 .game { border-radius: 14px; padding: 12px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; opacity: 0.75; }
 .game.on { border-color: var(--gold); opacity: 1; box-shadow: 0 0 0 2px rgba(245, 197, 66, 0.3); }
 .game b { display: block; font-size: 17px; }
@@ -127,6 +127,29 @@ input {
   display: flex; align-items: center; justify-content: center; font-size: 36px; line-height: 1;
 }
 .suitbox.red { color: var(--red); }
+
+/* Rummy de Fichas */
+.tile {
+  --tw: 40px; --th: 56px;
+  width: var(--tw); height: var(--th); border-radius: 8px; flex: 0 0 auto; position: relative; user-select: none; cursor: pointer;
+  background: linear-gradient(#fbf6e6, #ece3c8); border: 1px solid #c9bd9a;
+  box-shadow: 0 2px 0 #b8a97f, 0 3px 6px rgba(0, 0, 0, 0.35);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1;
+}
+.tile .tn { font-size: 24px; font-weight: 800; }
+.tile .ts { font-size: 11px; margin-top: 3px; }
+.tile .tv { position: absolute; bottom: 2px; font-size: 10px; font-weight: 700; color: #6b5a1f; }
+.tile.K { color: #1c1c1c; } .tile.B { color: #1f5fbf; } .tile.R { color: #c0262d; } .tile.O { color: #d86a00; }
+.tile.J { color: #7a3fa0; }
+.tile.sel { transform: translateY(-8px); box-shadow: 0 0 0 3px var(--gold), 0 6px 12px rgba(0, 0, 0, 0.45); }
+.tile.add { background: rgba(255, 255, 255, 0.12); border: 2px dashed var(--line); box-shadow: none; color: var(--muted); font-size: 22px; font-weight: 700; cursor: default; opacity: 0.5; }
+.tile.add.on { cursor: pointer; opacity: 1; border-color: var(--gold); color: var(--gold); }
+.tsets { display: flex; flex-wrap: wrap; gap: 10px; }
+.tset { display: flex; gap: 4px; padding: 8px 8px 10px; border-radius: 10px; background: rgba(255, 255, 255, 0.07); border: 2px solid transparent; }
+.tset.bad { border-color: #e0525a; }
+.rack { gap: 6px; }
+.banner.warn { border-color: #e0525a; }
+@media (max-width: 560px) { .tile { --tw: 34px; --th: 48px; } .tile .tn { font-size: 20px; } .tset { gap: 3px; padding: 6px; } }
 
 /* Solitario */
 .sol { --gap: 6px; --cw: min(72px, calc((100vw - 20px - 6 * var(--gap)) / 7)); --ch: calc(var(--cw) * 1.4); padding-bottom: 40px; max-width: 620px; }

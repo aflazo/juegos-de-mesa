@@ -2,8 +2,9 @@
 (function () {
   'use strict';
 
-  const GAMES = { maldito: window.Maldito, ocho: window.OchoLocos };
-  const NAMES = { maldito: 'El Maldito', ocho: 'Ocho Locos', sol: 'Solitario' };
+  const GAMES = { maldito: window.Maldito, ocho: window.OchoLocos, rummy: window.Rummy };
+  const NAMES = { maldito: 'El Maldito', ocho: 'Ocho Locos', rummy: 'Rummy de Fichas', sol: 'Solitario' };
+  const rm = { sets: null, sel: new Set(), key: '', orig: new Set(), sortBy: 'color' };
   const CARD = window.Maldito;       // utilidades de cartas compartidas
   const S = window.Solitario;
   const SOLSAVE = 'solitario-save';
@@ -156,7 +157,7 @@
       const i = net.seats.findIndex(s => s.conn === conn);
       if (i < 1 || !net.state) return;
       const a = d.a || {};
-      if (a.t === 'next') return conn.send({ t: 'err', msg: 'Solo el anfitrión empieza la siguiente ronda.' });
+      if (a.t === 'next' || a.t === 'finish') return conn.send({ t: 'err', msg: 'Solo el anfitrión decide cuándo sigue o termina la partida.' });
       const res = M.act(net.state, i, a);
       if (res.error) conn.send({ t: 'err', msg: res.error });
       refresh();
@@ -275,7 +276,7 @@
     if (mode === 'host' && !net.state) return renderLobby();
     if (mode === 'client' && !view) return lobby ? renderLobby() : renderWaiting();
     if (!view) return;
-    if (gameId === 'ocho') renderOcho(); else renderGame();
+    if (gameId === 'ocho') renderOcho(); else if (gameId === 'rummy') renderRummy(); else renderGame();
   }
 
   function renderHome() {
@@ -301,6 +302,7 @@
       '<div class="games">' +
       gcard('maldito', '2 a 6 jugadores · 10 juegos · el 2 es comodín') +
       gcard('ocho', '2 a 6 jugadores · el 8 es comodín · a 100 puntos') +
+      gcard('rummy', '2 a 4 jugadores · fichas numeradas · escaleras y grupos') +
       gcard('sol', '1 jugador · Klondike clásico') + '</div>' +
       resume +
       (homeGame === 'sol'
@@ -462,9 +464,9 @@
   function overlays() {
     let h = '';
     if (view && mode && mode !== 'sol' && (view.status === 'roundEnd' || view.status === 'gameOver')) {
-      h += gameId === 'ocho' ? ochoResultHTML() : resultHTML();
+      h += gameId === 'ocho' ? ochoResultHTML() : gameId === 'rummy' ? rummyResultHTML() : resultHTML();
     }
-    if (ui.help) h += ui.help === 'ocho' ? ochoHelpHTML() : ui.help === 'sol' ? solHelpHTML() : helpHTML();
+    if (ui.help) h += ui.help === 'ocho' ? ochoHelpHTML() : ui.help === 'rummy' ? rummyHelpHTML() : ui.help === 'sol' ? solHelpHTML() : helpHTML();
     if (ui.chooser) {
       h += '<div class="overlay" data-act="close"><div class="modal"><h2>' + esc(ui.chooser.title) + '</h2><div class="opts">' +
         ui.chooser.labels.map((l, i) => '<button data-act="choose" data-i="' + i + '">' + esc(l) + '</button>').join('') +
@@ -593,6 +595,139 @@
       '<button class="primary" data-act="closebtn">Entendido</button></div></div>';
   }
 
+  /* ---------- Rummy de Fichas ---------- */
+  const TILE_SYM = { K: '●', B: '■', R: '▲', O: '◆', J: '' };
+
+  function tileHTML(t, o) {
+    o = o || {};
+    const joker = t.n === 0;
+    return '<div class="tile ' + t.c + (o.sel ? ' sel' : '') + (o.cls ? ' ' + o.cls : '') + '" ' + (o.attr || '') + '>' +
+      (joker ? '<span class="tn">☺</span>' + (o.val ? '<span class="tv">=' + o.val + '</span>' : '')
+        : '<span class="tn">' + t.n + '</span><span class="ts">' + TILE_SYM[t.c] + '</span>') + '</div>';
+  }
+
+  function sortRack(rack) {
+    const ci = c => M.COLORS.indexOf(c);
+    return rack.slice().sort((a, b) => {
+      if (a.n === 0 || b.n === 0) return (a.n === 0 ? 1 : 0) - (b.n === 0 ? 1 : 0);
+      return rm.sortBy === 'color' ? (ci(a.c) - ci(b.c)) || (a.n - b.n) : (a.n - b.n) || (ci(a.c) - ci(b.c));
+    });
+  }
+
+  function renderRummy() {
+    const v = view, me = v.players[v.you], playing = v.status === 'playing';
+    if (mode === 'local' && ui.cover && playing) return renderCover();
+    const myTurn = playing && v.turn === v.you;
+
+    const lookup = new Map();
+    me.rack.forEach(t => lookup.set(t.id, t));
+    v.table.forEach(s => s.cells.forEach(c => lookup.set(c.id, c)));
+    const key = [v.round, v.turn, v.status, me.rack.length, v.poolCount, v.table.reduce((a, s) => a + s.cells.length, 0)].join(':');
+    if (key !== rm.key || !rm.sets) {
+      rm.key = key;
+      rm.sets = v.table.map(s => s.cells.map(c => c.id));
+      rm.sel = new Set();
+      rm.orig = new Set(me.rack.map(t => t.id));
+    }
+    const sets = myTurn ? rm.sets : v.table.map(s => s.cells.map(c => c.id));
+    const inSets = new Set();
+    sets.forEach(s => s.forEach(id => inSets.add(id)));
+    const rack = sortRack(me.rack.filter(t => !inSets.has(t.id)));
+    const dirty = myTurn && JSON.stringify(rm.sets) !== JSON.stringify(v.table.map(s => s.cells.map(c => c.id)));
+    const ev = myTurn && dirty ? M.evaluate(v.table.map(s => s.cells), me.rack, rm.sets, me.melded) : null;
+
+    let msg;
+    if (!playing) msg = 'Ronda terminada.';
+    else if (!myTurn) msg = 'Turno de ' + esc(v.players[v.turn].name) + '.';
+    else if (!dirty) msg = (mode === 'local' ? esc(me.name) + ': ' : 'Tu turno: ') +
+      (me.melded ? 'arma juegos con tus fichas (y reorganiza la mesa) o roba una ficha.'
+        : 'baja juegos con fichas tuyas que sumen ' + v.initial + ' o más, o roba una ficha.');
+    else if (ev.ok) msg = 'Todo en orden' + (me.melded ? '' : ' (primera bajada: ' + ev.meld + ' puntos)') + '. Toca «Terminar turno».';
+    else msg = ev.error;
+
+    const top =
+      '<div class="top">' + (net.code ? 'Sala <b>' + esc(net.code) + '</b> ·' : '') + ' <b>Rummy de Fichas</b> · Ronda <b>' + v.round + '</b> · Bolsa <b>' + v.poolCount + '</b>' +
+      (mode === 'client' && !net.connected ? ' · <span class="badge off">' + esc(ui.status || 'sin conexión') + '</span>' : '') +
+      '<span class="sp"></span><button class="small ghost" data-act="help">Reglas</button>' +
+      '<button class="small ghost" data-act="leave">Salir</button></div>';
+
+    const players = '<div class="players">' + v.players.map((p, i) =>
+      '<div class="pchip' + (playing && v.turn === i ? ' turn' : '') + '"><div class="n"><span>' + esc(p.name) +
+      (i === v.you && mode !== 'local' ? ' (tú)' : '') + '</span><span>' + p.score + ' pts</span></div>' +
+      '<div class="m">' + p.count + ' fichas ' + (p.melded ? '<span class="badge">ya bajó</span> ' : '') +
+      (v.conn && !v.conn[i] ? '<span class="badge off">sin conexión</span>' : '') + '</div></div>').join('') + '</div>';
+
+    const banner = '<div class="banner' + (myTurn ? ' mine' : '') + (myTurn && dirty && !ev.ok ? ' warn' : '') + '"><div class="msg">' + msg + '</div>' +
+      '<div class="log">' + esc(v.log.slice(-2).join(' ')) + '</div></div>';
+
+    const tableHTML = '<div class="table-area"><div class="section-title">Mesa</div>' +
+      (sets.length || myTurn
+        ? '<div class="tsets">' + sets.map((ids, i) => {
+          const tiles = ids.map(id => lookup.get(id));
+          const an = M.analyze(tiles);
+          const cells = an ? an.cells : tiles.map(t => ({ id: t.id, n: t.n, c: t.c, val: 0 }));
+          return '<div class="tset ' + (an ? 'ok' : 'bad') + '">' +
+            cells.map(c => tileHTML(c, { sel: rm.sel.has(c.id), val: c.val, attr: myTurn ? 'data-act="rt" data-id="' + c.id + '"' : '' })).join('') +
+            (myTurn ? '<div class="tile add' + (rm.sel.size ? ' on' : '') + '" data-act="rset" data-i="' + i + '" title="Agregar aquí las fichas seleccionadas">+</div>' : '') +
+            '</div>';
+        }).join('') + '</div>'
+        : '<div class="nothing">Todavía nadie ha bajado fichas.</div>') + '</div>';
+
+    let actions = '';
+    if (myTurn) {
+      actions += '<button data-act="rnew"' + (rm.sel.size ? '' : ' disabled') + '>Juego nuevo con la selección</button>';
+      actions += '<button data-act="rrack"' + (rm.sel.size ? '' : ' disabled') + '>Devolver al atril</button>';
+      actions += '<button class="ghost" data-act="rundo"' + (dirty ? '' : ' disabled') + '>Deshacer</button>';
+      actions += '<button class="primary" data-act="rcommit"' + (ev && ev.ok ? '' : ' disabled') + '>Terminar turno</button>';
+      actions += v.poolCount
+        ? '<button data-act="rdraw"' + (dirty ? ' disabled' : '') + '>Robar ficha</button>'
+        : '<button data-act="rpass"' + (dirty ? ' disabled' : '') + '>Pasar</button>';
+    }
+    actions += '<button class="ghost" data-act="rsort">Ordenar por ' + (rm.sortBy === 'color' ? 'número' : 'color') + '</button>';
+    const hint = myTurn
+      ? 'Toca fichas para seleccionarlas y luego «+» en un juego, o «Juego nuevo». Si una ficha vale más de una forma, el comodín (☺) toma el valor más alto.'
+      : '';
+
+    const dock = '<div class="dock"><div class="dock-in"><div class="hand rack">' +
+      (rack.length ? rack.map(t => tileHTML(t, { sel: rm.sel.has(t.id), attr: myTurn ? 'data-act="rt" data-id="' + t.id + '"' : '' })).join('')
+        : '<div class="nothing">Sin fichas en el atril.</div>') +
+      '</div><div class="actions">' + actions + '</div>' + (hint ? '<div class="hint">' + hint + '</div>' : '') + '</div></div>';
+
+    app.innerHTML = '<div class="game-screen">' + top + players + banner + tableHTML + '</div>' + dock + overlays();
+  }
+
+  function rummyResultHTML() {
+    const v = view, rr = v.roundResult, over = v.status === 'gameOver';
+    const w = rr.rows[rr.winner].name;
+    const sub = rr.blocked ? 'Nadie podía jugar: ' + esc(w) + ' tenía menos puntos en el atril.' : esc(w) + ' se quedó sin fichas.';
+    const rows = rr.rows.map((r, i) => '<tr' + (i === rr.winner ? ' class="win"' : '') + '><td>' + esc(r.name) + '</td><td class="num">' + r.left +
+      '</td><td class="num">' + (r.delta > 0 ? '+' : '') + r.delta + '</td><td class="num">' + r.total + '</td></tr>').join('');
+    let btn;
+    if (over) {
+      const best = v.players.reduce((a, p, i) => (p.score > v.players[a].score ? i : a), 0);
+      btn = '<p>Ganó ' + esc(v.players[best].name) + ' con ' + v.players[best].score + ' puntos.</p><button class="primary" data-act="home">Volver al inicio</button>';
+    } else if (mode === 'client') btn = '<p>Esperando a que el anfitrión decida si siguen jugando…</p>';
+    else btn = '<button class="primary" data-act="next">Siguiente ronda</button><button class="ghost" data-act="rfinish">Terminar la partida</button>';
+    return '<div class="overlay"><div class="modal"><h2>' + (over ? '🏆 Partida terminada' : 'Fin de la ronda ' + rr.round) + '</h2><p>' + sub + '</p>' +
+      '<table><tr><th>Jugador</th><th class="num">Fichas</th><th class="num">Ronda</th><th class="num">Total</th></tr>' + rows + '</table>' + btn + '</div></div>';
+  }
+
+  function rummyHelpHTML() {
+    return '<div class="overlay" data-act="close"><div class="modal"><h2>Rummy de Fichas</h2>' +
+      '<p><b>Fichas:</b> 106 en total. Dos juegos del 1 al 13 en cuatro colores y 2 comodines (☺). Cada jugador empieza con 14.</p>' +
+      '<p><b>Objetivo:</b> quedarte sin fichas en el atril.</p>' +
+      '<p><b>Juegos válidos:</b> un <b>grupo</b> es de 3 o 4 fichas del mismo número y colores distintos. ' +
+      'Una <b>escalera</b> es de 3 o más fichas del mismo color y números seguidos (el 1 es el más bajo y el 13 el más alto, no se da la vuelta).</p>' +
+      '<p><b>Tu turno:</b> o bajas al menos una ficha de tu atril, o robas una de la bolsa y se acaba tu turno.</p>' +
+      '<p><b>Primera bajada:</b> tiene que sumar ' + M.INITIAL + ' puntos o más usando solo fichas tuyas (el comodín vale lo que reemplaza). Antes de eso no puedes tocar los juegos de la mesa.</p>' +
+      '<p><b>Después</b> puedes reorganizar toda la mesa: separar, unir y mover fichas, siempre que al terminar tu turno todos los juegos sean válidos y no quede ninguna ficha suelta. Las fichas de la mesa no vuelven al atril.</p>' +
+      '<p><b>Comodín:</b> si lo sacas de un juego de la mesa, tienes que usarlo en otro juego en el mismo turno. ' +
+      'Si el comodín puede valer más de una cosa, la app le da el valor más alto.</p>' +
+      '<p><b>Puntos:</b> quien se queda sin fichas suma lo que les quedó a los demás; cada uno de los demás resta lo suyo (ficha = su número, comodín = 30). ' +
+      'Si se acaba la bolsa y nadie puede jugar, gana quien tenga menos puntos en el atril.</p>' +
+      '<button class="primary" data-act="closebtn">Entendido</button></div></div>';
+  }
+
   /* ---------- Solitario ---------- */
   function solSame(a, b) { return a && b && a.t === b.t && a.i === b.i && a.k === b.k; }
 
@@ -662,6 +797,16 @@
   const meNow = () => view.players[view.you];
   const selCards = () => Array.from(sel).map(id => meNow().hand.find(c => c.id === id)).filter(Boolean);
 
+  function rmMove(i) {
+    if (!rm.sel.size) return toast('Primero selecciona fichas.');
+    const ids = Array.from(rm.sel);
+    const sets = rm.sets.map(s => s.filter(id => !rm.sel.has(id)));
+    if (i < 0 || i >= sets.length) sets.push(ids); else sets[i] = sets[i].concat(ids);
+    rm.sets = sets.filter(s => s.length);
+    rm.sel = new Set();
+    render();
+  }
+
   const handlers = {
     create() {
       const n = myName(); if (!n) return;
@@ -725,6 +870,25 @@
       store('juegos-sel', homeGame);
       render();
     },
+    // Rummy de Fichas
+    rt(el) { const id = +el.dataset.id; if (rm.sel.has(id)) rm.sel.delete(id); else rm.sel.add(id); render(); },
+    rset(el) { rmMove(+el.dataset.i); },
+    rnew() { rmMove(-1); },
+    rrack() {
+      const back = new Set();
+      let blocked = false;
+      rm.sel.forEach(id => { if (rm.orig.has(id)) back.add(id); else blocked = true; });
+      if (blocked) toast('Las fichas que ya estaban en la mesa no pueden volver a tu atril.');
+      rm.sets = rm.sets.map(s => s.filter(id => !back.has(id))).filter(s => s.length);
+      rm.sel = new Set();
+      render();
+    },
+    rundo() { rm.key = ''; render(); },
+    rcommit() { send({ t: 'commit', sets: rm.sets }); },
+    rdraw() { send({ t: 'draw' }); },
+    rpass() { send({ t: 'pass' }); },
+    rsort() { rm.sortBy = rm.sortBy === 'color' ? 'num' : 'color'; render(); },
+    rfinish() { send({ t: 'finish' }); },
     // Ocho Locos
     odraw() { send({ t: 'draw' }); },
     opass() { send({ t: 'pass' }); },
