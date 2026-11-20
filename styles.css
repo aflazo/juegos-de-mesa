@@ -48,6 +48,8 @@ input {
 .game.on { border-color: var(--gold); opacity: 1; box-shadow: 0 0 0 2px rgba(245, 197, 66, 0.3); }
 .game b { display: block; font-size: 17px; }
 .game span { color: var(--muted); font-size: 13px; }
+a.game { color: inherit; text-decoration: none; }
+.game.kids { opacity: 1; border-color: rgba(143, 211, 255, 0.6); }
 .game.off { opacity: 0.55; display: flex; align-items: center; }
 .code { font-size: 40px; font-weight: 800; letter-spacing: 8px; text-align: center; color: var(--gold); }
 .plist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }

@@ -303,7 +303,8 @@
       gcard('maldito', '2 a 6 jugadores · 10 juegos · el 2 es comodín') +
       gcard('ocho', '2 a 6 jugadores · el 8 es comodín · a 100 puntos') +
       gcard('rummy', '2 a 4 jugadores · fichas numeradas · escaleras y grupos') +
-      gcard('sol', '1 jugador · Klondike clásico') + '</div>' +
+      gcard('sol', '1 jugador · Klondike clásico') +
+      '<a class="game kids" href="ajedrez.html"><b>Ajedrez para peques ♞</b><span>Aprende a jugar sin saber leer · con voz</span></a></div>' +
       resume +
       (homeGame === 'sol'
         ? '<div class="box"><h2>Solitario</h2><p>Ordena las cuatro bases del As al Rey. Se juega solo, en esta pantalla.</p>' +
